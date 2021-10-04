@@ -129,5 +129,5 @@ dmypy.json
 .pyre/
 
 # Model files
-.tflite
-.scorer
+*.tflite
+*.scorer
