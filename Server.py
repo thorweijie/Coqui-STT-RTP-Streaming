@@ -33,6 +33,7 @@ UDPServerSocket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
 UDPServerSocket.bind((localIP, localPort))
 print("UDP server up and running")
+print("Server listening on port ", localPort)
 
 # Generate directories for model and scorer files
 
