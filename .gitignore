@@ -131,3 +131,6 @@ dmypy.json
 # Model files
 *.tflite
 *.scorer
+
+# Sample audio files
+/audio

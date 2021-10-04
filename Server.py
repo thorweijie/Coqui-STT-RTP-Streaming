@@ -43,9 +43,9 @@ scorerDir = os.path.join(cwd, "coqui-stt-0.9.3-models.scorer")
 # Start CoquiSTT
 
 print('Initializing model...')
-logging.info("Model: %s", modelDir)
+print("Model: ", modelDir)
 model = stt.Model(modelDir)
-logging.info("Scorer: %s", scorerDir)
+print("Scorer: ", scorerDir)
 model.enableExternalScorer(scorerDir)
 stream_context = model.createStream()
 
