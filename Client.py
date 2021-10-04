@@ -7,8 +7,8 @@ Created on Sat Oct  2 15:17:41 2021
 
 import socket
 
-serverAddressPort = ("127.0.0.1", 20001)
-bufferSize = 1024
+serverAddressPort = ("127.0.0.1", 5004)
+bufferSize = 4096
 
 msgFromClient = "Connecting with server"
 bytesToSend = str.encode(msgFromClient)
