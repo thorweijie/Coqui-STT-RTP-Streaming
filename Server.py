@@ -5,133 +5,104 @@ Created on Sat Oct  2 15:17:41 2021
 @author: Wei Jie
 """
 
+import asyncio
+from asyncio.tasks import create_task
 import collections
+from datetime import datetime
 import numpy as np
 import os
 import queue
+from numpy.lib.function_base import append
 from rtp import RTP
-import socket
 import stt
-import threading
+import wave
 import webrtcvad
 
-localIP = ""
+localIP = "127.0.0.1"
 localPort = 5004
 bufferSize = 4096
 sampleRate = 16000
-unDecodedBufferQueue = queue.Queue()
-decodedPayloadBufferQueue = queue.Queue()
+padding = 300
+ratio = 0.75
+frameDuration = 20
 
-msgFromServer = ""
-def bytesToSend (msgFromServer):
-    return str.encode(msgFromServer)
+class RtpServerProtocol:
+    """Protocol to process received RTP packets"""
 
-# Create a datagram socket
+    def __init__(self, model) -> None:
+        numPaddingFrames = padding // frameDuration
+        self.ringBuffer = collections.deque(maxlen=numPaddingFrames)
+        self.unDecodedBufferQueue = queue.Queue()
+        self.triggered = False
+        self.voicedFrames = []
+        self.model = model
 
-UDPServerSocket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-
-# Bind to address and IP
-
-UDPServerSocket.bind((localIP, localPort))
-print("UDP server up and running")
-print("Server listening on port", localPort)
-
-# Generate directories for model and scorer files
-
-cwd = (os.getcwd())
-modelDir = os.path.join(cwd, "coqui-stt-0.9.3-models.tflite")
-scorerDir = os.path.join(cwd, "coqui-stt-0.9.3-models.scorer")
-
-# Start CoquiSTT
-
-print('Initializing model...')
-print("Model: ", modelDir)
-model = stt.Model(modelDir)
-print("Scorer: ", scorerDir)
-model.enableExternalScorer(scorerDir)
-stream_context = model.createStream()
-
-# Listen for incoming datagrams and put in buffer
-
-while(True):
-    byteAddressPair = UDPServerSocket.recvfrom(bufferSize)
-    message = byteAddressPair[0]
-    address = byteAddressPair[1]
-    clientMsg = f"Message from client: {message}"
-    clientIP = f"Client IP address: {address}"
-    unDecodedBufferQueue.put(message)
-
-    # Decode RTP packet and get payload
+        # Create VAD object with aggressiveness set to 3 (most aggressive)
+        self.vad = webrtcvad.Vad(3)
     
-    decodedPayload = RTP().fromBytes(unDecodedBufferQueue.get()).payload
-    
-    # Append payload to buffer
-    
-    decodedPayloadBufferQueue.put(decodedPayload)
-            
-    # Create VAD object with aggressiveness set to 3 (most aggressive)
-    
-    vad = webrtcvad.Vad(3)
-    
-    # Run payload through VAD, only stream payload with voice to CoquiSTT  
-    
-    def frame_generator():
-        """Generator that yields all audio frames from payload."""
-        while not decodedPayloadBufferQueue.empty():
-                yield decodedPayloadBufferQueue.get()
+    def connection_made(self, transport):
+        self.transport = transport
 
-    def vad_collector(padding_ms=300, ratio=0.75, frame_duration_ms = 20, frames = None):
-        """Generator that yields series of consecutive audio frames comprising each utterence, separated by yielding a single None.
-        Determines voice activity by ratio of frames in padding_ms. Uses a buffer to include padding_ms prior to being triggered.
-        Example: (frame, ..., frame, None, frame, ..., frame, None, ...)
-                    |---utterence---|        |---utterence---|
-        """
-        
-        if frames is None: frames = frame_generator()
-        num_padding_frames = padding_ms // frame_duration_ms
-        ring_buffer = collections.deque(maxlen=num_padding_frames)
-        triggered = False
-
-        for frame in frames:
-            print(len(frame))
-            # Hide frame length condition for testing
-            #if len(frame) < 640:
-            #    return
-
-            is_speech = vad.is_speech(frame, sampleRate)
-            print(is_speech)
-
-            if not triggered:
-                print("Entered not triggered condition")
-                ring_buffer.append((frame, is_speech))
-                print(len(ring_buffer))
-                num_voiced = len([f for f, speech in ring_buffer if speech])
-                if num_voiced > ratio * ring_buffer.maxlen:
-                    triggered = True
-                    print("Triggered changed to true")
-                    for f, s in ring_buffer:
-                        yield f
-                    ring_buffer.clear()
-
-            else:
-                yield frame
-                ring_buffer.append((frame, is_speech))
-                num_unvoiced = len([f for f, speech in ring_buffer if not speech])
-                if num_unvoiced > ratio * ring_buffer.maxlen:
-                    triggered = False
-                    print("Triggered changed to false")
-                    yield None
-                    ring_buffer.clear()
-    
     # Stream frames with voice to CoquiSTT
-    
-    frames = vad_collector()
-    for frame in frames:
-        if frame is not None:
-            print("streaming frame")
+    def transcribeAudio(self, frames):
+        stream_context = self.model.createStream()
+        print("streaming frame")
+        for frame in frames:
             stream_context.feedAudioContent(np.frombuffer(frame, np.int16))
+        print("end utterence")
+        text = stream_context.finishStream()
+        print("Recognized:", text)
+
+    def datagram_received(self, data, addr):
+
+        # Decode RTP packet and get payload
+        decodedPayload = RTP().fromBytes(data).payload
+
+        is_speech = self.vad.is_speech(decodedPayload, sampleRate)
+
+        if not self.triggered:
+            self.ringBuffer.append((decodedPayload, is_speech))
+            num_voiced = len([f for f, speech in self.ringBuffer if speech])
+            if num_voiced > ratio * self.ringBuffer.maxlen:
+                self.triggered = True
+                for f, s in self.ringBuffer:
+                    self.voicedFrames.append(f)
+                self.ringBuffer.clear()
         else:
-            print("end utterence")
-            text = stream_context.finishStream()
-            print("Recognized:", text)
-            stream_context = model.createStream()
+            self.voicedFrames.append(decodedPayload)
+            self.ringBuffer.append((decodedPayload, is_speech))
+            num_unvoiced = len([f for f, speech in self.ringBuffer if not speech])
+            if num_unvoiced > ratio * self.ringBuffer.maxlen:
+                self.triggered = False
+                self.ringBuffer.clear()
+                self.transcribeAudio(self.voicedFrames)
+                self.voicedFrames.clear()
+
+async def main():
+
+    # Generate directories for model and scorer files
+    loop = asyncio.get_running_loop()
+    cwd = (os.getcwd())
+    modelDir = os.path.join(cwd, "coqui-stt-0.9.3-models.tflite")
+    scorerDir = os.path.join(cwd, "coqui-stt-0.9.3-models.scorer")
+
+    # Start CoquiSTT
+    print('Initializing model...')
+    print("Model: ", modelDir)
+    model = stt.Model(modelDir)
+    print("Scorer: ", scorerDir)
+    model.enableExternalScorer(scorerDir)
+    
+    # Create a datagram socket, listen for incoming datagrams and put in buffer
+    print("UDP server up and running")
+    print("Server listening on port", localPort)
+    transport, protocol = await loop.create_datagram_endpoint(
+        lambda: RtpServerProtocol(model),
+        local_addr=(localIP, localPort))
+
+    try:
+        await asyncio.sleep(3600)  # Serve for 1 hour.
+    finally:
+        transport.close()
+
+asyncio.get_event_loop().run_until_complete(main())
