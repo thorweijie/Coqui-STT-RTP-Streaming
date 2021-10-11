@@ -2,6 +2,8 @@ import asyncio
 
 
 class EchoServerProtocol:
+    
+    # System calls this function with transport representing the connection, we need to
     def connection_made(self, transport):
         self.transport = transport
 

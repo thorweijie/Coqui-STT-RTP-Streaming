@@ -15,7 +15,6 @@ import queue
 from numpy.lib.function_base import append
 from rtp import RTP
 import stt
-import wave
 import webrtcvad
 
 localIP = "127.0.0.1"
